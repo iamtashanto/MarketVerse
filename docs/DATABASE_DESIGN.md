@@ -1,6 +1,6 @@
 # MarketVerse — Production Database Design
 
-**Companion to:** [PRD.md](./PRD.md) · [FEATURE_LIST.md](./FEATURE_LIST.md) · [../prisma/schema.prisma](../prisma/schema.prisma)
+**Companion to:** [PRD.md](./PRD.md) · [FEATURE_LIST.md](./FEATURE_LIST.md) · [../server/prisma/schema.prisma](../server/prisma/schema.prisma) · [BACKEND_ARCHITECTURE.md](./BACKEND_ARCHITECTURE.md)
 **Status:** Draft v1.0
 **Engine:** PostgreSQL 15+
 **ORM:** Prisma 5+
@@ -517,15 +517,29 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements; -- query performance monitori
 
 ### 11.1 Client & Migrate Connection Setup
 
-`schema.prisma` targets Prisma 7 (confirmed against the CLI: schema validates and formats clean under `prisma@7.9.1`). Prisma 7 removed `url`/`directUrl` from the `datasource` block in the schema file itself — connection strings now live in **`prisma.config.ts`** (repo root, used by Migrate/Studio) and are supplied to the runtime `PrismaClient` separately. Three small files at the repo root implement this:
+`schema.prisma` targets Prisma 7 (confirmed against the CLI: schema validates and formats clean under `prisma@7.9.1`, and the full server in [`../server`](../server) typechecks against the generated client). Prisma 7 removed `url`/`directUrl` from the `datasource` block in the schema file itself, **and** removed the plain connection-string constructor option from `PrismaClient` at runtime — both changes verified directly against the installed `@prisma/client@7.9.1` type definitions while building the backend, not assumed from memory. Two different mechanisms now supply connection info, for two different consumers:
+
+| Consumer | Mechanism | Where |
+|---|---|---|
+| **Migrate / Studio** (CLI, DDL) | `datasource.url` in **`prisma.config.ts`** — still a plain connection string, since Migrate doesn't go through a driver adapter | [`server/prisma.config.ts`](../server/prisma.config.ts) |
+| **Runtime `PrismaClient`** (the app) | A **driver adapter** instance (`@prisma/adapter-pg`, wrapping `pg`), passed as the `adapter` constructor option — `PrismaClientOptions` in Prisma 7 is a union of "has an adapter" or "has an Accelerate URL," a bare `url`/`datasourceUrl` string is no longer a valid option at all | [`server/src/lib/prisma.ts`](../server/src/lib/prisma.ts) |
+
+```ts
+// server/src/lib/prisma.ts (excerpt) — two named clients, two adapters,
+// each pointed at a different connection string (primary vs. read replica).
+import { PrismaPg } from "@prisma/adapter-pg";
+
+const writeAdapter = new PrismaPg({ connectionString: env.DATABASE_URL });
+export const prismaWrite = new PrismaClient({ adapter: writeAdapter });
+```
 
 | File | Purpose |
 |---|---|
-| [`prisma.config.ts`](../prisma.config.ts) | Read by `prisma migrate dev`/`deploy`/`studio`. Points Migrate at `DIRECT_DATABASE_URL` (falling back to `DATABASE_URL`) — DDL always goes over the direct, unpooled connection per §10. |
-| [`.env.example`](../.env.example) | Documents the two required connection strings: pooled `DATABASE_URL` (app runtime, via PgBouncer) and direct `DIRECT_DATABASE_URL` (Migrate only). Copy to `.env` and fill in real credentials — never commit `.env`. |
-| [`package.json`](../package.json) | Pins `prisma`/`@prisma/client` to the validated `7.9.1` line and exposes `db:*` scripts (`validate`, `format`, `migrate:dev`, `migrate:deploy`, `generate`, `studio`) so the workflow in §10 has concrete commands. |
+| [`server/prisma.config.ts`](../server/prisma.config.ts) | Read by `prisma migrate dev`/`deploy`/`studio`. Points Migrate at `DIRECT_DATABASE_URL` (falling back to `DATABASE_URL`) — DDL always goes over the direct, unpooled connection per §10. |
+| [`server/.env.example`](../server/.env.example) | Documents the required connection strings: pooled `DATABASE_URL` (app runtime, via PgBouncer), direct `DIRECT_DATABASE_URL` (Migrate only), and optional `REPLICA_DATABASE_URL`. Copy to `.env` and fill in real credentials — never commit `.env`. |
+| [`server/package.json`](../server/package.json) | Pins `prisma`/`@prisma/client`/`@prisma/adapter-pg`/`pg` to the validated `7.9.1`-compatible line and exposes `db:*` scripts (`validate`, `format`, `migrate:dev`, `migrate:deploy`, `generate`, `studio`). |
 
-Run `npm install` once these are in place, then `npm run db:validate` to confirm the schema still parses against whatever Prisma version is actually installed — schema/tooling versions drift over a project's lifetime, so this is worth keeping in CI (§10's drift-check step) rather than trusting it once.
+Run `npm install` inside `server/` once these are in place, then `npm run db:validate` (schema) and `npm run typecheck` (client usage) to confirm both still hold against whatever Prisma version is actually installed — schema/tooling versions drift over a project's lifetime, and this Prisma 7 driver-adapter requirement is a concrete example of exactly that kind of drift. Keep both checks in CI (§10's drift-check step) rather than trusting them once.
 
 ---
 

@@ -1,0 +1,65 @@
+name: marketverse
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: marketverse
+      POSTGRES_PASSWORD: marketverse
+      POSTGRES_DB: marketverse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketverse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://marketverse:marketverse@postgres:5432/marketverse
+      DIRECT_DATABASE_URL: postgresql://marketverse:marketverse@postgres:5432/marketverse
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      DATABASE_URL: postgresql://marketverse:marketverse@postgres:5432/marketverse
+      DIRECT_DATABASE_URL: postgresql://marketverse:marketverse@postgres:5432/marketverse
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
