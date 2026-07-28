@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { createBrowserRouter } from "react-router";
 import { RootLayout } from "@/layouts/RootLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
@@ -18,7 +18,7 @@ import ErrorPage from "@/pages/errors/ErrorPage";
 const StoreDashboardPage = lazy(() => import("@/pages/store/StoreDashboardPage"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage"));
 
-function withSuspense(element: React.ReactNode) {
+function withSuspense(element: ReactNode) {
   return <Suspense fallback={<FullPageSpinner />}>{element}</Suspense>;
 }
 

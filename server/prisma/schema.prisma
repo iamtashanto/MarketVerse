@@ -546,7 +546,7 @@ model Product {
   id             BigInt    @id @default(autoincrement())
   publicId       String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   categoryId     BigInt    @map("category_id")
-  sku            String
+  sku            String    @unique
   name           String
   description    String?
   baseCost       Decimal   @map("base_cost") @db.Decimal(10, 2)
@@ -563,7 +563,6 @@ model Product {
   storeInventories StoreInventory[]
 
   @@index([categoryId])
-  @@index([sku])
   @@index([isActive])
   @@map("products")
 }

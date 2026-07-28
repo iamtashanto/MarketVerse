@@ -1,4 +1,4 @@
-import type { ApiEnvelope } from "@/types/api";
+import type { ApiEnvelope, ApiSuccess } from "@/types/api";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000/api/v1";
 
@@ -49,7 +49,8 @@ interface RequestOptions extends RequestInit {
   skipAuthRetry?: boolean;
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+/** Returns the full success envelope — use when a caller needs `meta` (e.g. `nextCursor`). */
+export async function apiRequestEnvelope<T>(path: string, options: RequestOptions = {}): Promise<ApiSuccess<T>> {
   const { skipAuthRetry, ...init } = options;
 
   const res = await fetch(`${API_BASE_URL}${path}`, {
@@ -63,12 +64,18 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (!body.success) {
     if (res.status === 401 && !skipAuthRetry) {
       await refreshSession();
-      return apiRequest<T>(path, { ...options, skipAuthRetry: true });
+      return apiRequestEnvelope<T>(path, { ...options, skipAuthRetry: true });
     }
     throw new ApiError(res.status, body.error.code, body.error.message, body.error.details, body.error.requestId);
   }
 
-  return body.data;
+  return body;
+}
+
+/** Convenience wrapper for the common case — just the payload, no envelope/meta. */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const envelope = await apiRequestEnvelope<T>(path, options);
+  return envelope.data;
 }
 
 export function toQueryString(params: Record<string, unknown> | undefined): string {

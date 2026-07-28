@@ -323,14 +323,58 @@ This response is served through the cache-aside layer described in [BACKEND_ARCH
 Single item detail, same shape as above.
 
 ### `PATCH /stores/{storeId}/inventory/{productId}` 🔒 (owner)
-**Body:** `{ "price"?: number, "reorderThreshold"?: number }`. Writing `price` inserts a row into `store_inventory_price_history` via trigger (see [DATABASE_DESIGN.md §9.2](./DATABASE_DESIGN.md#92-history-tables--trigger-pattern-database-level)) and invalidates this item's cache entry.
-`422 VALIDATION_ERROR` if `price <= 0`.
+**Body:** `{ "price": number }`. `404 NOT_FOUND` if this store has never carried the product (order it first, below). `422 VALIDATION_ERROR` if `price <= 0`.
+
+> **Implemented vs. originally spec'd:** the live implementation ([`server/src/modules/inventory`](../server/src/modules/inventory)) covers `price` only — `reorderThreshold` (used by the auto-reorder automation in [FEATURE_LIST.md §3](./FEATURE_LIST.md#3-inventory)) is not wired yet. Every response shape and status code below reflects the actual running code, not the original aspirational spec, per [BACKEND_ARCHITECTURE.md §7](./BACKEND_ARCHITECTURE.md#7-dtos)'s output-DTO discipline. A future pass will either extend this endpoint or split reorder-threshold into its own.
+
+### `POST /stores/{storeId}/inventory/{productId}/order` 🔒 (owner)
+**Buying** — orders fresh stock from a supplier; always lands in the warehouse. See [GAMEPLAY_MECHANICS.md §4](./GAMEPLAY_MECHANICS.md#4-buying-restocking-from-suppliers). Debits the store owner's `CASH` wallet atomically with creating the `inventory_batches` row (`server/src/modules/economy/economy.service.ts`).
+
+**Body:** `{ "quantity": integer, 1–10000 }`
+
+**201 Created**
+```json
+{ "success": true, "data": { "quantity": 10, "unitPrice": 2.10, "total": 21.00, "newBalance": 979.00 } }
+```
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `CONFLICT` | Insufficient `CASH` balance to cover the order |
+| 404 | `NOT_FOUND` | Store or product doesn't exist |
+| 403 | `FORBIDDEN` | Caller doesn't own the store |
+
+> **Simplification for the current build:** delivery is instant (no lead-time truck/queue yet, per [GAMEPLAY_MECHANICS.md §12](./GAMEPLAY_MECHANICS.md#12-supplier)'s tiered lead times) and cost is always the product's `baseCost` — supplier-tier selection (Budget/Standard/Premium) isn't wired to this endpoint yet.
 
 ### `POST /stores/{storeId}/inventory/{productId}/restock` 🔒 (owner)
-Moves stock from warehouse to shelf. **Body:** `{ "quantity": integer > 0 }`. `409 CONFLICT` (`code: "INSUFFICIENT_WAREHOUSE_STOCK"`) if `warehouseQuantity < quantity`.
+Moves stock from warehouse to shelf, oldest batch first (FIFO), preserving each batch's original expiry. **Body:** `{ "quantity": integer > 0 }`.
+
+**200 OK** — the resulting inventory item, same shape as `GET .../inventory/{productId}`.
+
+`409 CONFLICT` if the warehouse has zero of this product on hand — note the actual error `code` is the generic `"CONFLICT"` (see [§0.6](#06-validation)), not a bespoke `INSUFFICIENT_WAREHOUSE_STOCK` code. If the warehouse has *some* but less than requested, the move is partial (moves what's available) rather than failing outright.
+
+### `POST /stores/{storeId}/inventory/{productId}/sell` 🔒 (owner)
+**Selling** — a walk-up sale, consumed from the shelf FIFO (never an `EXPIRED` batch — hard-blocked server-side). See [GAMEPLAY_MECHANICS.md §5](./GAMEPLAY_MECHANICS.md#5-selling). Credits the store owner's `CASH` wallet atomically with decrementing `store_inventory.shelfQuantity`.
+
+**Body:** `{ "quantity": integer, 1–1000 }`
+
+**201 Created** — same shape as `order` above (`quantity`, `unitPrice`, `total`, `newBalance`); `quantity` in the response reflects what was *actually* sold, which may be less than requested if the shelf ran out partway through.
+
+`409 CONFLICT` if the shelf has zero of this product in stock.
+
+> **Simplification for the current build:** this is a player-triggered action (walk up to a shelf, press "Sell"), not autonomous customer-AI-driven checkout — the full Customer Behaviour simulation from [GAMEPLAY_MECHANICS.md §6](./GAMEPLAY_MECHANICS.md#6-customer-behaviour) (patience, satisfaction, tips, archetypes) is not yet implemented. This endpoint is the real money-moving mechanic that AI-driven checkout will call into once it exists — the transaction logic doesn't change, only what triggers it.
 
 ### `GET /stores/{storeId}/inventory/{productId}/batches` 🔒 (owner)
 Lists `inventory_batches` (FIFO order, oldest `expiresAt` first) — powers the spoilage/expiry UI. **Filter:** `status` (`FRESH`/`EXPIRING`/`EXPIRED`/`DISCARDED`).
+
+> Not yet implemented in the running code as of this writing — documented as the target shape; the batch data it would read already exists (`order`/`restock`/`sell` above all read and write real `inventory_batches` rows).
+
+### `GET /stores/{storeId}/wallet` 🔒 (owner)
+The store owner's `CASH` balance — wallets are per-*player*, not per-store (a player with multiple stores draws from one wallet), so this is a convenience projection for the HUD rather than a separate ledger.
+
+**200 OK**
+```json
+{ "success": true, "data": { "currency": "CASH", "balance": 979.00 } }
+```
 
 ---
 
@@ -713,8 +757,11 @@ PATCH  /stores/{storeId}/warehouse
 GET    /stores/{storeId}/inventory
 GET    /stores/{storeId}/inventory/{productId}
 PATCH  /stores/{storeId}/inventory/{productId}
+POST   /stores/{storeId}/inventory/{productId}/order      (buying)
 POST   /stores/{storeId}/inventory/{productId}/restock
-GET    /stores/{storeId}/inventory/{productId}/batches
+POST   /stores/{storeId}/inventory/{productId}/sell        (selling)
+GET    /stores/{storeId}/inventory/{productId}/batches    (not yet implemented)
+GET    /stores/{storeId}/wallet
 
 GET    /products
 GET    /products/{productId}

@@ -13,6 +13,11 @@ export type GameEvents = {
   "customer:checked-out": { orderId: string; total: number };
   "shelf:emptied": { productId: string };
   "store:level-up": { newLevel: number };
+  /** Player entered/left interaction range of a shelf — drives the "Press E" prompt and ShelfPanel availability. */
+  "shelf:nearby": { productId: string };
+  "shelf:cleared": undefined;
+  /** Player pressed E or clicked a shelf while in range — opens ShelfPanel. */
+  "shelf:selected": { productId: string };
 };
 
 /**

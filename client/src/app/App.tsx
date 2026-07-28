@@ -1,10 +1,11 @@
+import type { ReactNode } from "react";
 import { RouterProvider } from "react-router";
 import { AppProviders } from "@/app/providers/AppProviders";
 import { router } from "@/app/router";
 import { useSession } from "@/features/auth/hooks/useSession";
 
 /** Resolves session status once, high in the tree, before any route guard reads it. */
-function SessionBootstrap({ children }: { children: React.ReactNode }) {
+function SessionBootstrap({ children }: { children: ReactNode }) {
   useSession();
   return children;
 }
