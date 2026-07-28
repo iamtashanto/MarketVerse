@@ -1,0 +1,1049 @@
+// =============================================================================
+// MarketVerse — Production PostgreSQL Schema (Prisma)
+// =============================================================================
+// Conventions, indexing rationale, partitioning, soft-delete pattern, and
+// history/audit design are documented in full at: docs/DATABASE_DESIGN.md
+//
+// - Internal PKs: BigInt autoincrement (`id`) — fast joins, small index size.
+// - External-facing IDs: `publicId` (Uuid) — never leak sequential internal ids.
+// - snake_case in the database via @map/@@map; camelCase in the Prisma client.
+// - Soft delete: `deletedAt` on any entity a user can "remove" but that other
+//   rows may still reference. TRUE uniqueness on nullable-soft-deleted fields
+//   (email, username, slug, guild name) is enforced via PARTIAL unique indexes
+//   added in raw-SQL migrations — see docs/DATABASE_DESIGN.md §7 and
+//   prisma/migrations/*_manual_constraints/migration.sql. The @@index below on
+//   those fields is a plain (non-unique) lookup index only.
+// - CHECK constraints are not expressible in schema.prisma today; all CHECKs
+//   are added via raw SQL in migrations (see docs/DATABASE_DESIGN.md §6).
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["views"]
+}
+
+// Connection URLs (pooled DATABASE_URL for the app, direct DIRECT_DATABASE_URL
+// for Migrate) are NOT declared here — Prisma 7 moved them out of the schema
+// file into prisma.config.ts (Migrate) and into the driver adapter passed to
+// `new PrismaClient({ adapter })` (runtime). See ../prisma.config.ts and
+// docs/DATABASE_DESIGN.md §11 "Client & Migrate Connection Setup".
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  DELETED
+
+  @@map("user_status")
+}
+
+enum AuthProviderType {
+  EMAIL
+  GOOGLE
+  APPLE
+  FACEBOOK
+
+  @@map("auth_provider_type")
+}
+
+enum CurrencyType {
+  CASH
+  GEMS
+  REPUTATION_STARS
+  FRANCHISE_POINTS
+
+  @@map("currency_type")
+}
+
+enum LedgerReason {
+  PRODUCT_SALE
+  SUPPLIER_PURCHASE
+  WAGE_PAYMENT
+  RENT_PAYMENT
+  UPGRADE_PURCHASE
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  IAP_CREDIT
+  MISSION_REWARD
+  ACHIEVEMENT_REWARD
+  DAILY_REWARD
+  SEASON_PASS_REWARD
+  EVENT_REWARD
+  GIFT_SENT
+  GIFT_RECEIVED
+  ADMIN_ADJUSTMENT
+  REFUND
+  FRANCHISE_RESET_BONUS
+
+  @@map("ledger_reason")
+}
+
+enum StoreStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("store_status")
+}
+
+enum DepartmentType {
+  GROCERY
+  BAKERY
+  DELI
+  PHARMACY
+  ELECTRONICS
+  FLORAL
+  CAFE
+
+  @@map("department_type")
+}
+
+enum SupplierTier {
+  BUDGET
+  STANDARD
+  PREMIUM
+
+  @@map("supplier_tier")
+}
+
+enum InventoryLocation {
+  SHELF
+  WAREHOUSE
+
+  @@map("inventory_location")
+}
+
+enum BatchStatus {
+  FRESH
+  EXPIRING
+  EXPIRED
+  DISCARDED
+
+  @@map("batch_status")
+}
+
+enum EmployeeRole {
+  CASHIER
+  STOCKER
+  MANAGER
+  CLEANER
+  SPECIALIST
+
+  @@map("employee_role")
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+
+  @@map("employee_status")
+}
+
+enum MissionType {
+  DAILY
+  WEEKLY
+  STORY
+  EVENT
+
+  @@map("mission_type")
+}
+
+enum MissionStatus {
+  IN_PROGRESS
+  COMPLETED
+  CLAIMED
+  EXPIRED
+
+  @@map("mission_status")
+}
+
+enum AchievementTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+
+  @@map("achievement_tier")
+}
+
+enum LeaderboardCategory {
+  NET_WORTH
+  REPUTATION
+  WEEKLY_REVENUE
+  GUILD_SCORE
+
+  @@map("leaderboard_category")
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+  DECLINED
+
+  @@map("friendship_status")
+}
+
+enum GuildRole {
+  OWNER
+  OFFICER
+  MEMBER
+
+  @@map("guild_role")
+}
+
+enum IapPlatform {
+  WEB
+  IOS
+  ANDROID
+
+  @@map("iap_platform")
+}
+
+enum IapStatus {
+  PENDING
+  VERIFIED
+  FAILED
+  REFUNDED
+
+  @@map("iap_status")
+}
+
+enum SubscriptionPlan {
+  VIP_MONTHLY
+  VIP_ANNUAL
+
+  @@map("subscription_plan")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+  PAST_DUE
+
+  @@map("subscription_status")
+}
+
+enum AdminRole {
+  SUPPORT
+  MODERATOR
+  ECONOMY_MANAGER
+  SUPERADMIN
+
+  @@map("admin_role")
+}
+
+enum ActorType {
+  USER
+  ADMIN
+  SYSTEM
+
+  @@map("actor_type")
+}
+
+// =============================================================================
+// IDENTITY & AUTH
+// =============================================================================
+
+model User {
+  id           BigInt     @id @default(autoincrement())
+  publicId     String     @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String     @map("email") @db.Citext
+  username     String     @map("username") @db.Citext
+  passwordHash String?    @map("password_hash")
+  displayName  String?    @map("display_name")
+  avatarUrl    String?    @map("avatar_url")
+  status       UserStatus @default(ACTIVE)
+  locale       String     @default("en")
+  countryCode  String?    @map("country_code") @db.Char(2)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(6)
+
+  authIdentities       AuthIdentity[]
+  sessions             UserSession[]
+  devices              UserDevice[]
+  setting              UserSetting?
+  walletBalances       WalletBalance[]
+  walletTransactions   WalletTransaction[]
+  franchiseGroup       FranchiseGroup?
+  stores               Store[]
+  userMissions         UserMission[]
+  userAchievements     UserAchievement[]
+  dailyRewardClaims    UserDailyRewardClaim[]
+  leaderboardEntries   LeaderboardEntry[]
+  friendshipsSent      Friendship[]           @relation("FriendshipRequester")
+  friendshipsReceived  Friendship[]           @relation("FriendshipAddressee")
+  guildMemberships     GuildMember[]
+  ownedGuilds          Guild[]
+  giftsSent            Gift[]                 @relation("GiftSender")
+  giftsReceived        Gift[]                 @relation("GiftReceiver")
+  notifications        Notification[]
+  eventParticipations  EventParticipation[]
+  iapTransactions      IapTransaction[]
+  subscriptions        Subscription[]
+  seasonPassProgresses SeasonPassProgress[]
+
+  @@unique([publicId])
+  @@index([email])
+  @@index([username])
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model AuthIdentity {
+  id             BigInt           @id @default(autoincrement())
+  userId         BigInt           @map("user_id")
+  provider       AuthProviderType
+  providerUserId String           @map("provider_user_id")
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+model UserDevice {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt   @map("user_id")
+  fingerprint String
+  platform    String?
+  firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt  DateTime @updatedAt @map("last_seen_at") @db.Timestamptz(6)
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions UserSession[]
+
+  @@unique([userId, fingerprint])
+  @@map("user_devices")
+}
+
+model UserSession {
+  id               BigInt    @id @default(autoincrement())
+  userId           BigInt    @map("user_id")
+  deviceId         BigInt?   @map("device_id")
+  refreshTokenHash String    @map("refresh_token_hash")
+  ipAddress        String?   @map("ip_address") @db.Inet
+  userAgent        String?   @map("user_agent")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device UserDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, expiresAt])
+  @@index([refreshTokenHash])
+  @@map("user_sessions")
+}
+
+model UserSetting {
+  id                BigInt   @id @default(autoincrement())
+  userId            BigInt   @unique @map("user_id")
+  preferences       Json     @default("{}") @db.JsonB
+  accessibility     Json     @default("{}") @db.JsonB
+  notificationPrefs Json     @default("{}") @map("notification_prefs") @db.JsonB
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// =============================================================================
+// WALLET / ECONOMY (ledger + cached balance pattern)
+// =============================================================================
+
+model WalletBalance {
+  id        BigInt       @id @default(autoincrement())
+  userId    BigInt       @map("user_id")
+  currency  CurrencyType
+  balance   BigInt       @default(0) // minor units (e.g., cents for CASH); reconciled against WalletTransaction sum
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, currency])
+  @@map("wallet_balances")
+}
+
+/// Append-only financial ledger — source of truth for all currency movement.
+/// Partitioned by range on `createdAt` (monthly) — see docs/DATABASE_DESIGN.md §8.
+model WalletTransaction {
+  id            BigInt       @id @default(autoincrement())
+  publicId      String       @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        BigInt       @map("user_id")
+  currency      CurrencyType
+  amount        BigInt // signed: positive = credit, negative = debit
+  balanceAfter  BigInt       @map("balance_after")
+  reason        LedgerReason
+  referenceType String?      @map("reference_type") // e.g. "store_inventory", "iap_transaction"
+  referenceId   BigInt?      @map("reference_id")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([userId, currency, createdAt])
+  @@index([referenceType, referenceId])
+  @@map("wallet_transactions")
+}
+
+// =============================================================================
+// STORES
+// =============================================================================
+
+model FranchiseGroup {
+  id              BigInt   @id @default(autoincrement())
+  userId          BigInt   @unique @map("user_id")
+  name            String
+  franchisePoints BigInt   @default(0) @map("franchise_points")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stores Store[]
+
+  @@map("franchise_groups")
+}
+
+model Store {
+  id               BigInt      @id @default(autoincrement())
+  publicId         String      @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId          BigInt      @map("owner_id")
+  franchiseGroupId BigInt?     @map("franchise_group_id")
+  name             String
+  slug             String
+  level            Int         @default(1)
+  xp               BigInt      @default(0)
+  reputationStars  Decimal     @default(0) @map("reputation_stars") @db.Decimal(3, 2)
+  status           StoreStatus @default(ACTIVE)
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?   @map("deleted_at") @db.Timestamptz(6)
+
+  owner          User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  franchiseGroup FranchiseGroup?   @relation(fields: [franchiseGroupId], references: [id], onDelete: SetNull)
+  layout         StoreLayout?
+  warehouse      StoreWarehouse?
+  departments    StoreDepartment[]
+  upgrades       StoreUpgrade[]
+  inventory      StoreInventory[]
+  employees      Employee[]
+  history        StoreHistory[]
+
+  @@index([ownerId])
+  @@index([franchiseGroupId])
+  @@index([slug])
+  @@index([status])
+  @@map("stores")
+}
+
+model StoreLayout {
+  id         BigInt   @id @default(autoincrement())
+  storeId    BigInt   @unique @map("store_id")
+  layoutData Json     @map("layout_data") @db.JsonB // grid/cell placement blob — see Normalization notes
+  version    Int      @default(1)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("store_layouts")
+}
+
+model StoreWarehouse {
+  id                  BigInt   @id @default(autoincrement())
+  storeId             BigInt   @unique @map("store_id")
+  capacity            Int      @default(200)
+  coldStorageCapacity Int      @default(0) @map("cold_storage_capacity")
+  level               Int      @default(1)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("store_warehouses")
+}
+
+model StoreDepartment {
+  id             BigInt         @id @default(autoincrement())
+  storeId        BigInt         @map("store_id")
+  departmentType DepartmentType @map("department_type")
+  unlockedAt     DateTime       @default(now()) @map("unlocked_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, departmentType])
+  @@map("store_departments")
+}
+
+model StoreUpgrade {
+  id          BigInt   @id @default(autoincrement())
+  storeId     BigInt   @map("store_id")
+  upgradeKey  String   @map("upgrade_key")
+  level       Int      @default(1)
+  purchasedAt DateTime @default(now()) @map("purchased_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, upgradeKey])
+  @@map("store_upgrades")
+}
+
+/// SCD2-style history of Store mutations, populated by an AFTER UPDATE/DELETE
+/// trigger (see docs/DATABASE_DESIGN.md §9). Never written to by the app directly.
+model StoreHistory {
+  id              BigInt    @id @default(autoincrement())
+  storeId         BigInt    @map("store_id")
+  operation       String    @db.VarChar(10) // INSERT | UPDATE | DELETE
+  name            String
+  level           Int
+  reputationStars Decimal   @map("reputation_stars") @db.Decimal(3, 2)
+  status          String
+  changedBy       BigInt?   @map("changed_by")
+  validFrom       DateTime  @map("valid_from") @db.Timestamptz(6)
+  validTo         DateTime? @map("valid_to") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, validFrom])
+  @@map("store_history")
+}
+
+// =============================================================================
+// PRODUCTS / SUPPLIERS
+// =============================================================================
+
+model ProductCategory {
+  id         BigInt         @id @default(autoincrement())
+  parentId   BigInt?        @map("parent_id")
+  department DepartmentType
+  name       String
+  slug       String         @unique
+
+  parent   ProductCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children ProductCategory[] @relation("CategoryHierarchy")
+  products Product[]
+
+  @@index([parentId])
+  @@index([department])
+  @@map("product_categories")
+}
+
+model Product {
+  id             BigInt    @id @default(autoincrement())
+  publicId       String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  categoryId     BigInt    @map("category_id")
+  sku            String
+  name           String
+  description    String?
+  baseCost       Decimal   @map("base_cost") @db.Decimal(10, 2)
+  basePrice      Decimal   @map("base_price") @db.Decimal(10, 2)
+  shelfLifeHours Int?      @map("shelf_life_hours") // null = non-perishable
+  unlockLevel    Int       @default(1) @map("unlock_level")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  category         ProductCategory   @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  suppliers        ProductSupplier[]
+  storeInventories StoreInventory[]
+
+  @@index([categoryId])
+  @@index([sku])
+  @@index([isActive])
+  @@map("products")
+}
+
+model Supplier {
+  id   BigInt       @id @default(autoincrement())
+  name String
+  tier SupplierTier
+
+  products ProductSupplier[]
+
+  @@map("suppliers")
+}
+
+model ProductSupplier {
+  id              BigInt  @id @default(autoincrement())
+  productId       BigInt  @map("product_id")
+  supplierId      BigInt  @map("supplier_id")
+  cost            Decimal @db.Decimal(10, 2)
+  leadTimeMinutes Int     @map("lead_time_minutes")
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, supplierId])
+  @@map("product_suppliers")
+}
+
+// =============================================================================
+// INVENTORY / WAREHOUSE
+// =============================================================================
+
+/// Per-store, per-product aggregate row — the hottest read path in the game
+/// (shelf state, price). shelfQuantity/warehouseQuantity are denormalized
+/// caches kept in sync with InventoryBatch; see Normalization notes.
+model StoreInventory {
+  id                BigInt   @id @default(autoincrement())
+  storeId           BigInt   @map("store_id")
+  productId         BigInt   @map("product_id")
+  shelfQuantity     Int      @default(0) @map("shelf_quantity")
+  warehouseQuantity Int      @default(0) @map("warehouse_quantity")
+  price             Decimal  @db.Decimal(10, 2)
+  reorderThreshold  Int      @default(0) @map("reorder_threshold")
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store                        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product      Product                      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  batches      InventoryBatch[]
+  priceHistory StoreInventoryPriceHistory[]
+
+  @@unique([storeId, productId])
+  @@index([storeId])
+  @@map("store_inventory")
+}
+
+/// FIFO / expiry-tracked stock batches — source of truth for spoilage logic.
+model InventoryBatch {
+  id               BigInt            @id @default(autoincrement())
+  storeInventoryId BigInt            @map("store_inventory_id")
+  location         InventoryLocation
+  quantity         Int
+  unitCost         Decimal           @map("unit_cost") @db.Decimal(10, 2)
+  receivedAt       DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
+  expiresAt        DateTime?         @map("expires_at") @db.Timestamptz(6)
+  status           BatchStatus       @default(FRESH)
+
+  storeInventory StoreInventory @relation(fields: [storeInventoryId], references: [id], onDelete: Cascade)
+
+  @@index([storeInventoryId, status])
+  @@index([expiresAt])
+  @@map("inventory_batches")
+}
+
+/// Trigger-populated price history for dynamic-pricing analytics (PRD §7, §9).
+model StoreInventoryPriceHistory {
+  id               BigInt   @id @default(autoincrement())
+  storeInventoryId BigInt   @map("store_inventory_id")
+  oldPrice         Decimal  @map("old_price") @db.Decimal(10, 2)
+  newPrice         Decimal  @map("new_price") @db.Decimal(10, 2)
+  changedAt        DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  storeInventory StoreInventory @relation(fields: [storeInventoryId], references: [id], onDelete: Cascade)
+
+  @@index([storeInventoryId, changedAt])
+  @@map("store_inventory_price_history")
+}
+
+// =============================================================================
+// EMPLOYEES
+// =============================================================================
+
+model Employee {
+  id           BigInt         @id @default(autoincrement())
+  publicId     String         @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId      BigInt         @map("store_id")
+  name         String
+  role         EmployeeRole
+  level        Int            @default(1)
+  xp           Int            @default(0)
+  morale       Decimal        @default(100) @db.Decimal(5, 2)
+  wage         Decimal        @db.Decimal(10, 2)
+  status       EmployeeStatus @default(ACTIVE)
+  hiredAt      DateTime       @default(now()) @map("hired_at") @db.Timestamptz(6)
+  terminatedAt DateTime?      @map("terminated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  store  Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  shifts EmployeeShift[]
+
+  @@index([storeId, status])
+  @@map("employees")
+}
+
+model EmployeeShift {
+  id         BigInt    @id @default(autoincrement())
+  employeeId BigInt    @map("employee_id")
+  startsAt   DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt     DateTime? @map("ends_at") @db.Timestamptz(6)
+  zone       String?
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, startsAt])
+  @@map("employee_shifts")
+}
+
+// =============================================================================
+// MISSIONS / ACHIEVEMENTS / DAILY REWARDS
+// =============================================================================
+
+model Mission {
+  id           BigInt      @id @default(autoincrement())
+  key          String      @unique
+  type         MissionType
+  title        String
+  description  String
+  requirements Json        @db.JsonB
+  reward       Json        @db.JsonB
+  activeFrom   DateTime?   @map("active_from") @db.Timestamptz(6)
+  activeTo     DateTime?   @map("active_to") @db.Timestamptz(6)
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  userMissions UserMission[]
+
+  @@index([type])
+  @@map("missions")
+}
+
+model UserMission {
+  id          BigInt        @id @default(autoincrement())
+  userId      BigInt        @map("user_id")
+  missionId   BigInt        @map("mission_id")
+  cycleKey    String        @map("cycle_key") // e.g. "2026-07-28" (daily) / "2026-W30" (weekly)
+  progress    Json          @default("{}") @db.JsonB
+  status      MissionStatus @default(IN_PROGRESS)
+  assignedAt  DateTime      @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  completedAt DateTime?     @map("completed_at") @db.Timestamptz(6)
+  claimedAt   DateTime?     @map("claimed_at") @db.Timestamptz(6)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, missionId, cycleKey])
+  @@index([userId, status])
+  @@map("user_missions")
+}
+
+model Achievement {
+  id          BigInt          @id @default(autoincrement())
+  key         String          @unique
+  tier        AchievementTier
+  title       String
+  description String
+  reward      Json            @db.JsonB
+  isSecret    Boolean         @default(false) @map("is_secret")
+
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            BigInt    @id @default(autoincrement())
+  userId        BigInt    @map("user_id")
+  achievementId BigInt    @map("achievement_id")
+  progress      Decimal   @default(0) @db.Decimal(12, 2)
+  unlockedAt    DateTime? @map("unlocked_at") @db.Timestamptz(6)
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+model DailyRewardDefinition {
+  id       BigInt @id @default(autoincrement())
+  dayIndex Int    @unique @map("day_index") // 1-7
+  reward   Json   @db.JsonB
+
+  @@map("daily_reward_definitions")
+}
+
+model UserDailyRewardClaim {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt   @map("user_id")
+  dayIndex    Int      @map("day_index")
+  streakCount Int      @map("streak_count")
+  claimedAt   DateTime @default(now()) @map("claimed_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, claimedAt])
+  @@map("user_daily_reward_claims")
+}
+
+// =============================================================================
+// LEADERBOARDS
+// =============================================================================
+
+model LeaderboardSeason {
+  id       BigInt              @id @default(autoincrement())
+  key      String              @unique
+  category LeaderboardCategory
+  startsAt DateTime            @map("starts_at") @db.Timestamptz(6)
+  endsAt   DateTime            @map("ends_at") @db.Timestamptz(6)
+
+  entries LeaderboardEntry[]
+
+  @@map("leaderboard_seasons")
+}
+
+/// Fully derived/cached table, recomputed periodically from Store/Wallet data.
+/// See Normalization notes — this table intentionally violates 3NF for read speed.
+model LeaderboardEntry {
+  id        BigInt   @id @default(autoincrement())
+  seasonId  BigInt   @map("season_id")
+  userId    BigInt   @map("user_id")
+  score     BigInt
+  rank      Int?
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  season LeaderboardSeason @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  user   User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([seasonId, userId])
+  @@index([seasonId, score(sort: Desc)])
+  @@map("leaderboard_entries")
+}
+
+// =============================================================================
+// SOCIAL / MULTIPLAYER
+// =============================================================================
+
+model Friendship {
+  id          BigInt           @id @default(autoincrement())
+  requesterId BigInt           @map("requester_id")
+  addresseeId BigInt           @map("addressee_id")
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  respondedAt DateTime?        @map("responded_at") @db.Timestamptz(6)
+
+  requester User @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee User @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status])
+  @@map("friendships")
+}
+
+model Guild {
+  id          BigInt    @id @default(autoincrement())
+  publicId    String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  description String?
+  ownerId     BigInt    @map("owner_id")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  owner   User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  members GuildMember[]
+
+  @@index([name])
+  @@map("guilds")
+}
+
+model GuildMember {
+  id       BigInt    @id @default(autoincrement())
+  guildId  BigInt    @map("guild_id")
+  userId   BigInt    @map("user_id")
+  role     GuildRole @default(MEMBER)
+  joinedAt DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, userId])
+  @@map("guild_members")
+}
+
+model Gift {
+  id         BigInt    @id @default(autoincrement())
+  senderId   BigInt    @map("sender_id")
+  receiverId BigInt    @map("receiver_id")
+  giftType   String    @map("gift_type")
+  payload    Json      @db.JsonB
+  sentAt     DateTime  @default(now()) @map("sent_at") @db.Timestamptz(6)
+  claimedAt  DateTime? @map("claimed_at") @db.Timestamptz(6)
+
+  sender   User @relation("GiftSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("GiftReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([receiverId, claimedAt])
+  @@map("gifts")
+}
+
+// =============================================================================
+// NOTIFICATIONS
+// =============================================================================
+
+/// High-volume, append-mostly table — partitioned by range on `createdAt`.
+model Notification {
+  id        BigInt    @id @default(autoincrement())
+  userId    BigInt    @map("user_id")
+  type      String
+  payload   Json      @db.JsonB
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// =============================================================================
+// EVENTS
+// =============================================================================
+
+model GameEvent {
+  id       BigInt   @id @default(autoincrement())
+  key      String   @unique
+  name     String
+  config   Json     @db.JsonB
+  startsAt DateTime @map("starts_at") @db.Timestamptz(6)
+  endsAt   DateTime @map("ends_at") @db.Timestamptz(6)
+
+  participations EventParticipation[]
+
+  @@index([startsAt, endsAt])
+  @@map("game_events")
+}
+
+model EventParticipation {
+  id       BigInt   @id @default(autoincrement())
+  eventId  BigInt   @map("event_id")
+  userId   BigInt   @map("user_id")
+  progress Json     @default("{}") @db.JsonB
+  joinedAt DateTime @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  event GameEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@map("event_participations")
+}
+
+// =============================================================================
+// MONETIZATION
+// =============================================================================
+
+model IapProduct {
+  id          BigInt      @id @default(autoincrement())
+  sku         String      @unique
+  platform    IapPlatform
+  priceUsd    Decimal     @map("price_usd") @db.Decimal(10, 2)
+  gemsGranted Int         @map("gems_granted")
+  isActive    Boolean     @default(true) @map("is_active")
+
+  transactions IapTransaction[]
+
+  @@map("iap_products")
+}
+
+model IapTransaction {
+  id                    BigInt    @id @default(autoincrement())
+  publicId              String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                BigInt    @map("user_id")
+  iapProductId          BigInt    @map("iap_product_id")
+  platformTransactionId String    @unique @map("platform_transaction_id")
+  amountUsd             Decimal   @map("amount_usd") @db.Decimal(10, 2)
+  status                IapStatus @default(PENDING)
+  receiptData           Json?     @map("receipt_data") @db.JsonB
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  verifiedAt            DateTime? @map("verified_at") @db.Timestamptz(6)
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  iapProduct IapProduct @relation(fields: [iapProductId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@map("iap_transactions")
+}
+
+model Subscription {
+  id               BigInt             @id @default(autoincrement())
+  userId           BigInt             @map("user_id")
+  plan             SubscriptionPlan
+  status           SubscriptionStatus @default(ACTIVE)
+  currentPeriodEnd DateTime           @map("current_period_end") @db.Timestamptz(6)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  cancelledAt      DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("subscriptions")
+}
+
+model SeasonPass {
+  id       BigInt   @id @default(autoincrement())
+  key      String   @unique
+  startsAt DateTime @map("starts_at") @db.Timestamptz(6)
+  endsAt   DateTime @map("ends_at") @db.Timestamptz(6)
+
+  progresses SeasonPassProgress[]
+
+  @@map("season_passes")
+}
+
+model SeasonPassProgress {
+  id           BigInt  @id @default(autoincrement())
+  seasonPassId BigInt  @map("season_pass_id")
+  userId       BigInt  @map("user_id")
+  tier         Int     @default(0)
+  isPremium    Boolean @default(false) @map("is_premium")
+  xp           Int     @default(0)
+
+  seasonPass SeasonPass @relation(fields: [seasonPassId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([seasonPassId, userId])
+  @@map("season_pass_progress")
+}
+
+// =============================================================================
+// ADMIN & AUDIT
+// =============================================================================
+
+/// Internal staff accounts — intentionally separate from `users` (player table)
+/// so player data export/deletion (GDPR) never intersects staff auth.
+model AdminUser {
+  id           BigInt    @id @default(autoincrement())
+  publicId     String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique @db.Citext
+  passwordHash String    @map("password_hash")
+  role         AdminRole
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@map("admin_users")
+}
+
+/// Generic polymorphic audit trail for all sensitive domain + admin actions.
+/// Partitioned by range on `createdAt` — see docs/DATABASE_DESIGN.md §8.
+model AuditLog {
+  id         BigInt    @id @default(autoincrement())
+  publicId   String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorType  ActorType @map("actor_type")
+  actorId    BigInt?   @map("actor_id")
+  action     String
+  entityType String    @map("entity_type")
+  entityId   BigInt?   @map("entity_id")
+  before     Json?     @db.JsonB
+  after      Json?     @db.JsonB
+  ipAddress  String?   @map("ip_address") @db.Inet
+  userAgent  String?   @map("user_agent")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId])
+  @@index([actorType, actorId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
