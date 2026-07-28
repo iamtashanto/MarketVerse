@@ -1,0 +1,65 @@
+/**
+ * Design tokens as plain CSS custom properties — swappable at runtime via
+ * `data-theme`/`data-theme-variant` on <html>, with zero React re-renders
+ * involved in the actual repaint. See docs/FRONTEND_ARCHITECTURE.md §6.
+ *
+ * Two-layer indirection: these `--mv-*` tokens hold the actual runtime
+ * values; theme.css (below) maps Tailwind's `@theme` names onto them, so
+ * `bg-surface` etc. resolve through the swappable variable instead of a
+ * value baked in at build time.
+ */
+
+:root,
+[data-theme="dark"] {
+  --mv-color-bg-canvas: #0f1115;
+  --mv-color-surface: #1a1d24;
+  --mv-color-surface-raised: #22262f;
+  --mv-color-text-primary: #f5f6f8;
+  --mv-color-text-muted: #9ca0ab;
+  --mv-color-accent: #ffb020;
+  --mv-color-success: #3ec97a;
+  --mv-color-danger: #ef5b5b;
+  --mv-color-border: #2a2e38;
+
+  --mv-radius-sm: 4px;
+  --mv-radius-md: 8px;
+  --mv-radius-lg: 16px;
+
+  --mv-space-1: 0.25rem;
+  --mv-space-2: 0.5rem;
+  --mv-space-3: 0.75rem;
+  --mv-space-4: 1rem;
+  --mv-space-6: 1.5rem;
+  --mv-space-8: 2rem;
+}
+
+[data-theme="light"] {
+  --mv-color-bg-canvas: #f4f5f7;
+  --mv-color-surface: #ffffff;
+  --mv-color-surface-raised: #f0f1f4;
+  --mv-color-text-primary: #14161a;
+  --mv-color-text-muted: #5b6070;
+  --mv-color-accent: #b5720a;
+  --mv-color-success: #1f8f52;
+  --mv-color-danger: #c8382f;
+  --mv-color-border: #dfe1e6;
+}
+
+/* Colorblind-safe palette variant (FEATURE_LIST.md §14 Accessibility) —
+   swaps hue-only distinctions (success green / danger red) for a
+   deuteranopia-safe pair. Applies on top of either light or dark. */
+[data-theme-variant="colorblind-safe"] {
+  --mv-color-success: #2e86ab;
+  --mv-color-danger: #d1495b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

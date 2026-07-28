@@ -1,0 +1,44 @@
+@import "tailwindcss";
+@import "./theme/tokens.css";
+
+/* Maps Tailwind v4's CSS-first theme onto the runtime-swappable --mv-* tokens
+   above — `bg-surface`, `text-primary`, etc. resolve through the current
+   theme/variant rather than a value fixed at build time. */
+@theme {
+  --color-bg-canvas: var(--mv-color-bg-canvas);
+  --color-surface: var(--mv-color-surface);
+  --color-surface-raised: var(--mv-color-surface-raised);
+  --color-text-primary: var(--mv-color-text-primary);
+  --color-text-muted: var(--mv-color-text-muted);
+  --color-accent: var(--mv-color-accent);
+  --color-success: var(--mv-color-success);
+  --color-danger: var(--mv-color-danger);
+  --color-border: var(--mv-color-border);
+
+  --radius-sm: var(--mv-radius-sm);
+  --radius-md: var(--mv-radius-md);
+  --radius-lg: var(--mv-radius-lg);
+}
+
+body {
+  background-color: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+}
+
+/* Accessibility: visible on keyboard focus only, first focusable element on
+   every page. See docs/FRONTEND_ARCHITECTURE.md §16. */
+.skip-to-content {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  background: var(--color-accent);
+  color: var(--color-bg-canvas);
+  padding: var(--mv-space-2) var(--mv-space-4);
+  border-radius: var(--radius-sm);
+}
+
+.skip-to-content:focus {
+  left: var(--mv-space-2);
+  top: var(--mv-space-2);
+}
